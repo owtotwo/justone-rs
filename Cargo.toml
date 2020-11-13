@@ -7,3 +7,4 @@ description = "A fast duplicate files finder, the rust implementation for JustOn
 edition = "2018"
 
 [dependencies]
+walkdir = "2"
