@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::fs::File;
 use std::io::prelude::{Read};
 use std::error::Error;
 use std::collections::{HashMap, HashSet};
 
-use walkdir::WalkDir;
+use walkdir::{WalkDir, DirEntry};
 
 use std::hash::Hasher;
 use twox_hash::XxHash64;
@@ -14,11 +13,11 @@ const FILE_READ_BUFFER_SIZE: usize = 8192;
 const SMALL_HASH_CHUNK_SIZE: usize = 1024;
 
 #[derive(Debug)]
-pub struct JustOne {
+pub struct JustOne<'a> {
     // hash_func: ,
     // ignore_error: bool = ignore_error
     // file_info: List[Tuple[FileIndex, Path, FileSize, Optional[HashValue], Optional[HashValue]]] = []
-    file_info: Vec<FileInfo>,
+    file_info: Vec<FileInfo<'a>>,
     // file_index: Dict[Path, FileIndex] = {}
     file_index: HashMap<PathBuf, FileIndex>,
     // size_dict: DefaultDict[FileSize, Set[FileIndex]] = defaultdict(set)
@@ -30,9 +29,9 @@ pub struct JustOne {
 }
 
 #[derive(Debug)]
-struct FileInfo {
+struct FileInfo<'a> {
     id: FileIndex,
-    path: Box<Path>,
+    path: &'a Path,
     size: FileSize,
     small_hash_val: SmallHash,
     full_hash_val: FullHash,
@@ -45,7 +44,7 @@ struct SmallHash(u64);
 #[derive(Debug)]
 struct FullHash(u64);
 
-impl JustOne {
+impl<'a> JustOne<'a> {
     pub fn new() -> Self {
         JustOne {
             file_info: Vec::new(),
@@ -56,11 +55,41 @@ impl JustOne {
         }
     }
 
-    pub fn update(&mut self, dir: &Path) -> Result<(), Box<dyn Error>> {
+    pub fn update(&mut self, dir: impl AsRef<Path>) -> Result<(), Box<dyn Error>> {
+        self.update_directory(dir, true).unwrap();
+        
         Ok(())
     }
 
     pub fn duplicates(&self) -> Result<Vec<Vec<Box<Path>>>, Box<dyn Error>> {
+        Ok(vec![])
+    }
+
+    fn update_directory(&mut self, dir: impl AsRef<Path>, ignore_error: bool) -> Result<Vec<Vec<Box<Path>>>, Box<dyn Error>> {
+        if !ignore_error {
+            let mut entries = Vec::new();
+            for entry in WalkDir::new(dir) {
+                let entry = entry?;
+                // println!("{}", entry.path().display());
+                entries.push(entry);
+            }
+            self.update_dir_entries(entries)
+        } else {
+            self.update_dir_entries(
+                // Iterate over all entries and ignore any errors that may arise
+                // (e.g., This code below will silently skip directories that the owner of the running process does not have permission to access.)
+                WalkDir::new(dir)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| !e.file_type().is_dir())
+            )
+        }
+    }
+    fn update_dir_entries<T>(&self, entries: T) -> Result<Vec<Vec<Box<Path>>>, Box<dyn Error>> 
+            where T: IntoIterator<Item=DirEntry> {       
+        for entry in entries.into_iter() {
+            println!("{}", entry.path().display());
+        }
         Ok(vec![])
     }
 }
@@ -88,6 +117,7 @@ fn get_full_hash(f: &mut dyn Read) -> Result<FullHash, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     #[test]
     fn test_get_small_hash() {
