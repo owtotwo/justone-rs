@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 use walkdir::WalkDir;
 
-use std::hash::{Hasher};
-use twox_hash::{Xxh3Hash64, XxHash64};
+use std::hash::Hasher;
+use twox_hash::XxHash64;
 
 const XXHASH_SEED_DEFAULT: u64 = 0;
 const FILE_READ_BUFFER_SIZE: usize = 8192;
@@ -65,91 +65,65 @@ impl JustOne {
     }
 }
 
-fn get_small_hash(mut f: File) -> Result<SmallHash, Box<dyn Error>> {
-    let mut chunk_buffer = [0; SMALL_HASH_CHUNK_SIZE];
+fn get_small_hash(f: &mut dyn Read) -> Result<SmallHash, Box<dyn Error>> {
+    let mut buffer = [0; SMALL_HASH_CHUNK_SIZE];
     let mut hasher = XxHash64::with_seed(XXHASH_SEED_DEFAULT); // TODO: Use xxh3_128
-    let read_size = f.read(&mut chunk_buffer)?;
-    hasher.write(&chunk_buffer[..read_size]);
-    // hasher.write(b"test");
-    // let hex_buffer: String = chunk_buffer.iter()
-    //     .as_slice()
-    //     .chunks(16)
-    //     .map(|chunk| chunk.iter().map(|byte| format!("{:02x}", byte)).collect::<String>())
-    //     .map(|line| format!("{}\n", line)).collect();
-    // println!("buffer is {}", hex_buffer);
-
+    let read_size = f.read(&mut buffer)?;
+    hasher.write(&buffer[..read_size]);
     Ok(SmallHash(hasher.finish()))
 }
 
-fn get_full_hash(mut f: File) -> Result<FullHash, Box<dyn Error>> {
-    let mut chunk_buffer = [0; SMALL_HASH_CHUNK_SIZE];
+fn get_full_hash(f: &mut dyn Read) -> Result<FullHash, Box<dyn Error>> {
     let mut hasher = XxHash64::with_seed(XXHASH_SEED_DEFAULT); // TODO: Use xxh3_128
+    let mut buffer = [0; FILE_READ_BUFFER_SIZE];
     loop {
-        let read_size = f.by_ref().take(SMALL_HASH_CHUNK_SIZE as u64).read(&mut chunk_buffer)?;
-        hasher.write(&chunk_buffer[..read_size]);
-        if read_size == 0 { break; };
+        let read_size = f.read(&mut buffer)?;
+        if read_size == 0 { break }
+        hasher.write(&buffer[..read_size]);
     }
-
     Ok(FullHash(hasher.finish()))
 }
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use twox_hash::{XxHash32, XxHash64, Xxh3Hash64, Xxh3Hash128};
-    use twox_hash::xxh3::*;
-
     #[test]
     fn test_get_small_hash() {
-        let f = File::open("test_data/Against the Current - Legends Never Die-2017英雄联盟全球总决赛主题曲.mp3").unwrap();
-        let SmallHash(hash_val) = get_small_hash(f).unwrap();        
-        assert_eq!("fb95eaebae131262", format!("{:016x}", hash_val));
+        let mut f = &[b'0'; 12345][..];
+        let SmallHash(hash_val) = get_small_hash(&mut f).unwrap();        
+        assert_eq!("908a9517d970b2c6", format!("{:016x}", hash_val)); // xxh64
 
-        let f = File::open("test_data/test.txt").unwrap();
-        let SmallHash(hash_val) = get_small_hash(f).unwrap();        
-        assert_eq!("44bc2cf5ad770999", format!("{:016x}", hash_val));
+        let mut f = File::open("test_data/Against the Current - Legends Never Die-2017英雄联盟全球总决赛主题曲.mp3").unwrap();
+        let SmallHash(hash_val) = get_small_hash(&mut f).unwrap();        
+        assert_eq!("fb95eaebae131262", format!("{:016x}", hash_val)); // xxh64
 
-        // let mut hasher = Xxh3Hash64::default();
-        // hasher.write(b"xxhash");
-        // let val = hasher.finish();
-        // println!("Xxh3Hash64: {:x}", val);
+        let mut f = File::open("test_data/test.txt").unwrap();
+        let SmallHash(hash_val) = get_small_hash(&mut f).unwrap();        
+        assert_eq!("44bc2cf5ad770999", format!("{:016x}", hash_val)); // xxh64
 
-        // let mut hasher = Xxh3Hash128::default();
-        // hasher.write(b"xxhash");
-        // let val = hasher.finish();
-        // println!("Xxh3Hash128: {:x}", val);
-
-        // let mut hasher = XxHash32::default();
-        // hasher.write(b"xxhash");
-        // let val = hasher.finish();
-        // println!("XxHash32: {:x}", val);
-
-        // let mut hasher = XxHash64::default();
-        // hasher.write(b"xxhash");
-        // let val = hasher.finish();
-        // println!("XxHash64: {:x}", val);
-
-        // let val = hash64_with_seed(b"xxhash", 0);
-        // println!("hash64_with_seed: {:x}", val);
-
-        // let val = hash128_with_seed(b"xxhash", 0);
-        // println!("hash128_with_seed: {:x}", val);
-
-        // xxh3_64 small hex: 8e881cdca1df7770
-        // xxh3_64 small int: 10270490684152575856
-        // xxh3_128 small hex: c97dd49cdbf0726a8e881cdca1df7770
-        // xxh3_128 small int: 267828176558582169949584563257206601584
+        let mut f = File::open("test_data/empty.txt").unwrap();
+        let SmallHash(hash_val) = get_small_hash(&mut f).unwrap();
+        assert_eq!("ef46db3751d8e999", format!("{:016x}", hash_val)); // xxh64
     }
 
     #[test]
     fn test_get_full_hash() {
-        let f = File::open("test_data/Against the Current - Legends Never Die-2017英雄联盟全球总决赛主题曲.mp3").unwrap();
-        let FullHash(hash_val) = get_full_hash(f).unwrap();
-        assert_eq!("2b18bac92063d35f", format!("{:016x}", hash_val));
+        let mut f = &[b'0'; 12345][..];
+        let FullHash(hash_val) = get_full_hash(&mut f).unwrap();        
+        assert_eq!("8052320d3bcad6a7", format!("{:016x}", hash_val)); // xxh64
+        
+        let mut f = File::open("test_data/Against the Current - Legends Never Die-2017英雄联盟全球总决赛主题曲.mp3").unwrap();
+        let FullHash(hash_val) = get_full_hash(&mut f).unwrap();
+        assert_eq!("2b18bac92063d35f", format!("{:016x}", hash_val)); // xxh64
 
-        let f = File::open("test_data/test.txt").unwrap();
-        let FullHash(hash_val) = get_full_hash(f).unwrap();
-        assert_eq!("44bc2cf5ad770999", format!("{:016x}", hash_val));
+        let mut f = File::open("test_data/test.txt").unwrap();
+        let FullHash(hash_val) = get_full_hash(&mut f).unwrap();
+        assert_eq!("44bc2cf5ad770999", format!("{:016x}", hash_val)); // xxh64
+
+        let mut f = File::open("test_data/empty.txt").unwrap();
+        let FullHash(hash_val) = get_full_hash(&mut f).unwrap();
+        assert_eq!("ef46db3751d8e999", format!("{:016x}", hash_val)); // xxh64
     }
 }
