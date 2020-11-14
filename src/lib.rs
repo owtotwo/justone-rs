@@ -22,17 +22,12 @@ type FullHashDict = HashMap<FullHash, HashSet<FileIndex>>;
 
 #[derive(Debug)]
 pub struct JustOne {
-    // hash_func: ,
-    // ignore_error: bool = ignore_error
-    // file_info: List[Tuple[FileIndex, Path, FileSize, Optional[HashValue], Optional[HashValue]]] = []
+    // hash_func: xxhash, // TODO
+    // ignore_error: bool = ignore_error // TODO
     file_info: Vec<FileInfo>,
-    // file_index: Dict[Path, FileIndex] = {}
     file_index: HashMap<PathBuf, FileIndex>,
-    // size_dict: DefaultDict[FileSize, Set[FileIndex]] = defaultdict(set)
     size_dict: SizeDict,
-    // small_hash_dict: DefaultDict[Tuple[FileSize, HashValue], Set[FileIndex]] = defaultdict(set)
     small_hash_dict: SmallHashDict,
-    // full_hash_dict: DefaultDict[HashValue, Set[FileIndex]] = defaultdict(set)
     full_hash_dict: FullHashDict,
 }
 
@@ -70,11 +65,19 @@ impl JustOne {
     }
 
     pub fn duplicates(&self) -> Result<Vec<Vec<&Path>>, Box<dyn Error>> {
+        // TODO: Different levels
+
+        // println!("[Dupl][size_dict] {:?}", self.size_dict);
+        // println!("[Dupl][small_hash_dict] {:?}", self.small_hash_dict);
+        // println!("[Dupl][full_hash_dict] {:?}", self.full_hash_dict);
         let mut dups: Vec<Vec<&Path>> = Vec::with_capacity(self.full_hash_dict.len());
         for (_, file_index_set) in &self.full_hash_dict {
-            let mut dup = Vec::with_capacity(file_index_set.len());
+            let set_size = file_index_set.len();
+            debug_assert!(set_size >= 1);
+            if set_size == 1 { continue; }
+            let mut dup = Vec::with_capacity(set_size);
             for file_index in file_index_set {
-                dup.push(self.get_file_path_by_index(file_index.clone())?);
+                dup.push(self.get_file_path_by_index(file_index.clone()));
             }
             dups.push(dup);
         }
@@ -86,7 +89,6 @@ impl JustOne {
             let mut entries = Vec::new();
             for entry in WalkDir::new(dir) {
                 let entry = entry?;
-                // println!("{}", entry.path().display());
                 entries.push(entry);
             }
             self.update_dir_entries(entries)
@@ -102,12 +104,7 @@ impl JustOne {
         }
     }
     fn update_dir_entries<T>(&mut self, entries: T) -> Result<HashSet<FileIndex>, Box<dyn Error>> 
-            where T: IntoIterator<Item=DirEntry> {       
-        // size_dict_temp: DefaultDict[FileSize, Set[FileIndex]] = defaultdict(set)
-        // small_hash_dict_temp: DefaultDict[Tuple[FileSize, HashValue], Set[FileIndex]] = defaultdict(set)
-        // full_hash_dict_temp: DefaultDict[HashValue, Set[FileIndex]] = defaultdict(set)
-        // duplicate_files_index: Set[FileIndex] = set()
-
+            where T: IntoIterator<Item=DirEntry> {
         let mut size_dict_temp: SizeDict = HashMap::new();
         let mut small_hash_dict_temp: SmallHashDict = HashMap::new();
         let mut full_hash_dict_temp: FullHashDict = HashMap::new();
@@ -115,7 +112,7 @@ impl JustOne {
 
 
         for entry in entries.into_iter().progress() {
-            // let path: PathBuf = entry.path().into();
+            // println!("[Entries] {}", entry.path().display());
             let path: &Path = entry.path();
             let file_size = entry.metadata()?.len() as FileSize;
             let file_index = self.add_file_info(path, file_size, None, None)?;
@@ -126,10 +123,10 @@ impl JustOne {
                 set.insert(file_index);
                 size_dict_temp.insert(file_size, set);
             }
-            // println!("{}", entry.path().display());
         }
 
         for (file_size, file_index) in self.merge_size_dict(size_dict_temp)?.into_iter().progress() {
+            // println!("[SizeDict] {}", self.get_file_path_by_index(file_index).display());
             let small_hash = self.get_small_hash(file_index)?;
             let key = (file_size, small_hash);
             if let Some(set) = small_hash_dict_temp.get_mut(&key) {
@@ -142,6 +139,7 @@ impl JustOne {
         }
 
         for file_index in self.merge_small_hash_dict(small_hash_dict_temp)?.into_iter().progress() {
+            // println!("[SmallHash] {}", self.get_file_path_by_index(file_index).display());
             let full_hash = self.get_full_hash(file_index)?;
             if let Some(set) = full_hash_dict_temp.get_mut(&full_hash) {
                 set.insert(file_index);
@@ -153,6 +151,7 @@ impl JustOne {
         }
         
         for file_index in self.merge_full_hash_dict(full_hash_dict_temp)?.into_iter().progress() {
+            // println!("[FullHash] {}", self.get_file_path_by_index(file_index).display());
             duplicate_files_index.insert(file_index);
         }
         
@@ -177,20 +176,24 @@ impl JustOne {
         }
     }
 
-    fn get_file_path_by_index(&self, file_index: FileIndex) -> Result<&Path, Box<dyn Error>> {
-        Ok(&self.file_info.get(file_index).unwrap().path)
+    fn get_file_path_by_index(&self, file_index: FileIndex) -> &Path {
+        &self.file_info.get(file_index).unwrap().path
     }
 
     fn merge_size_dict(&mut self, size_dict_temp: SizeDict) -> Result<Vec<(FileSize, FileIndex)>, Box<dyn Error>> {
         // TODO: Use iterator like size_dict_temp.iter().map(|..| ...)...
         let mut merged: Vec<(FileSize, FileIndex)> = Vec::new();
         for (file_size, file_index_set_temp) in size_dict_temp {
+            if !self.size_dict.contains_key(&file_size) {
+                self.size_dict.insert(file_size, HashSet::new());
+            }
             let file_index_set = self.size_dict.get_mut(&file_size).unwrap();
             let is_single = file_index_set.len() == 1;
-            let union_set: HashSet<_> = file_index_set.union(&file_index_set_temp).cloned().collect(); // TODO: Try Extend::extend()
-            if union_set.len() > 1 {
-                let set = if is_single { union_set } else { file_index_set_temp };
-                merged.extend(set.into_iter().map(|file_index| (file_size, file_index)));
+            file_index_set.extend(file_index_set_temp.iter());
+            // let union_set: HashSet<_> = file_index_set.union(&file_index_set_temp).cloned().collect(); // TODO: Try Extend::extend()
+            if file_index_set.len() > 1 {
+                let set = if is_single { &*file_index_set } else { &file_index_set_temp };
+                merged.extend(set.iter().map(|&file_index| (file_size, file_index)));
             }
         }
         Ok(merged)
@@ -200,12 +203,16 @@ impl JustOne {
         // TODO: Use iterator like small_hash_dict_temp.iter().map(|..| ...)...
         let mut merged: Vec<FileIndex> = Vec::new();
         for (file_size_and_small_hash, file_index_set_temp) in small_hash_dict_temp {
+            if !self.small_hash_dict.contains_key(&file_size_and_small_hash) {
+                self.small_hash_dict.insert(file_size_and_small_hash, HashSet::new());
+            }
             let file_index_set = self.small_hash_dict.get_mut(&file_size_and_small_hash).unwrap();
             let is_single = file_index_set.len() == 1;
-            let union_set: HashSet<_> = file_index_set.union(&file_index_set_temp).cloned().collect(); // TODO: Try Extend::extend()
-            if union_set.len() > 1 {
-                let set = if is_single { union_set } else { file_index_set_temp };
-                merged.extend(set.into_iter());
+            file_index_set.extend(file_index_set_temp.iter());
+            // let union_set: HashSet<_> = file_index_set.union(&file_index_set_temp).cloned().collect(); // TODO: Try Extend::extend()
+            if file_index_set.len() > 1 {
+                let set = if is_single { &*file_index_set } else { &file_index_set_temp };
+                merged.extend(set.iter());
             }
         }
         Ok(merged)
@@ -215,12 +222,16 @@ impl JustOne {
         // TODO: Use iterator like full_hash_dict_temp.iter().map(|..| ...)...
         let mut merged: Vec<FileIndex> = Vec::new();
         for (full_hash, file_index_set_temp) in full_hash_dict_temp {
+            if !self.full_hash_dict.contains_key(&full_hash) {
+                self.full_hash_dict.insert(full_hash, HashSet::new());
+            }
             let file_index_set = self.full_hash_dict.get_mut(&full_hash).unwrap();
             let is_single = file_index_set.len() == 1;
-            let union_set: HashSet<_> = file_index_set.union(&file_index_set_temp).cloned().collect(); // TODO: Try Extend::extend()
-            if union_set.len() > 1 {
-                let set = if is_single { union_set } else { file_index_set_temp };
-                merged.extend(set.into_iter());
+            file_index_set.extend(file_index_set_temp.iter());
+            // let union_set: HashSet<_> = file_index_set.union(&file_index_set_temp).cloned().collect(); // TODO: Try Extend::extend()
+            if file_index_set.len() > 1 {
+                let set = if is_single { &*file_index_set } else { &file_index_set_temp };
+                merged.extend(set.iter());
             }
         }
         Ok(merged)
@@ -266,7 +277,7 @@ fn get_full_hash(f: &mut dyn Read) -> Result<FullHash, Box<dyn Error>> {
     let mut buffer = [0; FILE_READ_BUFFER_SIZE];
     loop {
         let read_size = f.read(&mut buffer)?;
-        if read_size == 0 { break }
+        if read_size == 0 { break; }
         hasher.write(&buffer[..read_size]);
     }
     Ok(FullHash(hasher.finish()))

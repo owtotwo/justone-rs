@@ -5,21 +5,21 @@ use justone::{self, JustOne};
 fn main() -> Result<(), Box<dyn Error>>{
     println!("Hello, justone!");
     let mut jo = JustOne::new();
-    let dir_path_1 = Path::new("test_data");
-    let dir_path_2 = Path::new("D:\\test_dup_data");
-    let dups: Result<Vec<Vec<&Path>>, Box<dyn Error>> = jo.update(&dir_path_1)?.update(&dir_path_2)?.duplicates();
+    jo.update("test_data")?;
+    jo.update("D:\\test_dup_data")?;
+    let dups: Result<Vec<Vec<&Path>>, Box<dyn Error>> = jo.duplicates();
 
     match dups {
         Ok(dups) => {
             for (i, dup) in dups.iter().enumerate() {
-                println!("[{}] Duplicate found:", i);
+                println!("[{}] Duplicate found:", i + 1);
                 for path in dup {
-                    println!(" - {:?}", path);
+                    println!(" - {}", path.display());
                 }
             }
         },
-        Err(_) => {
-            eprintln!("Something Wrong...");
+        Err(e) => {
+            eprintln!("Something Wrong...{:?}", e);
         },
     };
 
