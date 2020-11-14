@@ -69,8 +69,16 @@ impl JustOne {
         Ok(self)
     }
 
-    pub fn duplicates(&self) -> Result<Vec<Vec<Box<Path>>>, Box<dyn Error>> {
-        Ok(vec![])
+    pub fn duplicates(&self) -> Result<Vec<Vec<&Path>>, Box<dyn Error>> {
+        let mut dups: Vec<Vec<&Path>> = Vec::with_capacity(self.full_hash_dict.len());
+        for (_, file_index_set) in &self.full_hash_dict {
+            let mut dup = Vec::with_capacity(file_index_set.len());
+            for file_index in file_index_set {
+                dup.push(self.get_file_path_by_index(file_index.clone())?);
+            }
+            dups.push(dup);
+        }
+        Ok(dups)
     }
 
     fn update_directory(&mut self, dir: impl AsRef<Path>, ignore_error: bool) -> Result<HashSet<FileIndex>, Box<dyn Error>> {
@@ -167,6 +175,10 @@ impl JustOne {
             });
             Ok(index)
         }
+    }
+
+    fn get_file_path_by_index(&self, file_index: FileIndex) -> Result<&Path, Box<dyn Error>> {
+        Ok(&self.file_info.get(file_index).unwrap().path)
     }
 
     fn merge_size_dict(&mut self, size_dict_temp: SizeDict) -> Result<Vec<(FileSize, FileIndex)>, Box<dyn Error>> {

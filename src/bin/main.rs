@@ -7,8 +7,7 @@ fn main() -> Result<(), Box<dyn Error>>{
     let mut jo = JustOne::new();
     let dir_path_1 = Path::new("test_data");
     let dir_path_2 = Path::new("D:\\test_dup_data");
-    jo.update(&dir_path_1)?.update(&dir_path_2)?;
-    let dups: Result<Vec<Vec<Box<Path>>>, Box<dyn Error>> = jo.duplicates();
+    let dups: Result<Vec<Vec<&Path>>, Box<dyn Error>> = jo.update(&dir_path_1)?.update(&dir_path_2)?.duplicates();
 
     match dups {
         Ok(dups) => {
