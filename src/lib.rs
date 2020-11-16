@@ -23,7 +23,8 @@ type FullHashDict = HashMap<FullHash, HashSet<FileIndex>>;
 #[derive(Debug)]
 pub struct JustOne {
     // hash_func: xxhash, // TODO
-    // ignore_error: bool = ignore_error // TODO
+    strict_level: StrictLevel, // TODO
+    ignore_error: bool, // TODO
     file_info: Vec<FileInfo>,
     file_index: HashMap<PathBuf, FileIndex>,
     size_dict: SizeDict,
@@ -47,14 +48,30 @@ struct SmallHash(u64);
 #[derive(Debug, Hash, Eq, PartialEq, Copy, Clone)]
 struct FullHash(u64);
 
-impl JustOne {
-    pub fn new() -> Self {
+impl Default for JustOne {
+    fn default() -> Self {
         JustOne {
+            strict_level: StrictLevel::default(),
+            ignore_error: true,
             file_info: Vec::new(),
             file_index: HashMap::new(),
             size_dict: HashMap::new(),
             small_hash_dict: HashMap::new(),
             full_hash_dict: HashMap::new(),
+        }
+    }
+}
+
+impl JustOne {
+    pub fn new() -> Self {
+        JustOne::default()
+    }
+
+    pub fn with_config(strict_level: StrictLevel, ignore_error: bool) -> Self {
+        JustOne {
+            strict_level,
+            ignore_error,
+            ..JustOne::default()
         }
     }
 
@@ -70,6 +87,15 @@ impl JustOne {
         // println!("[Dupl][size_dict] {:?}", self.size_dict);
         // println!("[Dupl][small_hash_dict] {:?}", self.small_hash_dict);
         // println!("[Dupl][full_hash_dict] {:?}", self.full_hash_dict);
+
+        match self.strict_level {
+            StrictLevel::Common => self.duplicates_common(),
+            StrictLevel::Shallow => self.duplicates_strict(true),
+            StrictLevel::ByteByByte => self.duplicates_strict(false),
+        }
+    }
+
+    fn duplicates_common(&self) -> Result<Vec<Vec<&Path>>, Box<dyn Error>> {
         let mut dups: Vec<Vec<&Path>> = Vec::with_capacity(self.full_hash_dict.len());
         for (_, file_index_set) in &self.full_hash_dict {
             let set_size = file_index_set.len();
@@ -82,6 +108,25 @@ impl JustOne {
             dups.push(dup);
         }
         Ok(dups)
+    }
+
+    fn duplicates_strict(&self, shallow: bool) -> Result<Vec<Vec<&Path>>, Box<dyn Error>> {
+        let dups = self.duplicates_common()?;
+        let mut diff_files: Vec<Vec<&Path>> = Vec::new();
+        for dup in dups {
+            for file in dup {
+                for same_files in &mut diff_files {
+                    let first_file = same_files[0];
+                    if file_cmp(file, first_file, shallow)? {
+                        same_files.push(file);
+                        break;
+                    }
+                }
+                diff_files.push(vec![file]);
+            }
+        }
+
+        Ok(diff_files)
     }
 
     fn update_directory(&mut self, dir: impl AsRef<Path>, ignore_error: bool) -> Result<HashSet<FileIndex>, Box<dyn Error>> {
@@ -281,6 +326,21 @@ fn get_full_hash(f: &mut dyn Read) -> Result<FullHash, Box<dyn Error>> {
         hasher.write(&buffer[..read_size]);
     }
     Ok(FullHash(hasher.finish()))
+}
+
+fn file_cmp(file_a: impl AsRef<Path>, file_b: impl AsRef<Path>, shallow: bool) -> Result<bool, Box<dyn Error>> {
+    unimplemented!() // TODO
+}
+
+#[derive(Debug)]
+pub enum StrictLevel {
+    Common,
+    Shallow,
+    ByteByByte,
+}
+
+impl Default for StrictLevel {
+    fn default() -> Self { StrictLevel::Common }
 }
 
 
