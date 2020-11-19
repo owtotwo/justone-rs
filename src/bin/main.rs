@@ -1,11 +1,10 @@
-use std::path::Path;
 use std::error::Error;
-use std::time::{Instant};
+use std::fs::File;
 use std::io::{self, Write};
-use std::fs::{File};
+use std::path::Path;
+use std::time::Instant;
 
-use clap::{Arg, App};
-
+use clap::{App, Arg};
 use justone::{self, JustOne, StrictLevel};
 
 fn main() {
@@ -70,7 +69,10 @@ fn main() {
         1 => StrictLevel::Shallow,
         2 => StrictLevel::ByteByByte,
         x @ _ => {
-            eprintln!("{} is not a valid level for file comparison strict level. (need -s, -ss or unset)", x);
+            eprintln!(
+                "{} is not a valid level for file comparison strict level. (need -s, -ss or unset)",
+                x
+            );
             std::process::exit(1);
         }
     };
@@ -80,9 +82,13 @@ fn main() {
             Ok(f) => Box::new(f),
             Err(e) => {
                 eprintln!("Error: {}", e);
-                eprintln!("Because of {:?}, failed to create a output file {} for writing result.", e.kind(), path);
+                eprintln!(
+                    "Because of {:?}, failed to create a output file {} for writing result.",
+                    e.kind(),
+                    path
+                );
                 std::process::exit(1);
-            },
+            }
         }
     } else {
         Box::new(io::stdout())
@@ -101,20 +107,28 @@ fn main() {
     };
 }
 
-fn print_duplicates(folders: Vec<impl AsRef<Path>>, mut output: Box<dyn Write>, strict_level: StrictLevel, ignore_error: bool, time_it: bool) -> Result<(), Box<dyn Error>> {
+fn print_duplicates(
+    folders: Vec<impl AsRef<Path>>,
+    mut output: Box<dyn Write>,
+    strict_level: StrictLevel,
+    ignore_error: bool,
+    time_it: bool,
+) -> Result<(), Box<dyn Error>> {
     let mut jo = JustOne::with_config(strict_level, ignore_error);
-    
+
     let start = Instant::now();
-    
+
     for folder in folders {
         jo.update(folder)?;
     }
-    let dups= jo.duplicates()?;
+    let dups = jo.duplicates()?;
 
     let time_waste = start.elapsed();
 
     for (i, dup) in dups.iter().enumerate() {
-        if i != 0 { writeln!(&mut output, "")?; }
+        if i != 0 {
+            writeln!(&mut output, "")?;
+        }
         writeln!(&mut output, "[{}] Duplicate found:", i + 1)?;
         for path in dup {
             writeln!(&mut output, " - {}", path.display())?;
