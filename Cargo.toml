@@ -1,6 +1,6 @@
 [package]
 name = "justone"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["owtotwo <owtotwo@163.com>"]
 license = "LGPL-3.0-only"
 description = "A fast duplicate files finder, the rust implementation for JustOne."
