@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use clap::{App, Arg};
-use justone::{self, JustOne, StrictLevel};
+use justone::{self, JustOne, StrictLevel, default_hasher_creator};
 
 fn main() {
     let matches = App::new("justone")
@@ -58,11 +58,6 @@ fn main() {
     let ignore_error = matches.is_present("ignore-error");
     let time_it = matches.is_present("time");
     let output = matches.value_of("output");
-    println!("Value for folders: {:?}", folders);
-    println!("Value for strict_level: {}", strict_level);
-    println!("Value for ignore_error: {:?}", ignore_error);
-    println!("Value for time: {:?}", time_it);
-    println!("Value for output: {:?}", output);
 
     let strict_level = match strict_level {
         0 => StrictLevel::Common,
@@ -95,14 +90,8 @@ fn main() {
     };
 
     if let Err(e) = print_duplicates(folders, output, strict_level, ignore_error, time_it) {
+        eprintln!(""); // newline
         eprintln!("Error: {}", e);
-        // print Error chain recursively
-        let mut err: &(dyn Error + 'static) = e.as_ref();
-        while let Some(source) = err.source() {
-            eprintln!("Error Source: {}", source);
-            err = source;
-        }
-        eprintln!("Running Error Occurred");
         std::process::exit(1);
     };
 }
@@ -114,13 +103,14 @@ fn print_duplicates(
     ignore_error: bool,
     time_it: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let mut jo = JustOne::with_config(strict_level, ignore_error);
+    let mut jo = JustOne::with_full_config(default_hasher_creator(), strict_level, ignore_error);
 
     let start = Instant::now();
 
     for folder in folders {
         jo.update(folder)?;
     }
+
     let dups = jo.duplicates()?;
 
     let time_waste = start.elapsed();

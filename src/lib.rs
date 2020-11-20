@@ -22,11 +22,11 @@ type SizeDict = HashMap<FileSize, HashSet<FileIndex>>;
 type SmallHashDict = HashMap<(FileSize, SmallHash), HashSet<FileIndex>>;
 type FullHashDict = HashMap<FullHash, HashSet<FileIndex>>;
 
-#[derive(Debug)]
 pub struct JustOne {
-    // hash_func: xxhash, // TODO
+    hasher_creator: Box<dyn Fn() -> Box<dyn Hasher>>,
     strict_level: StrictLevel,
-    ignore_error: bool, // TODO
+    ignore_error: bool,
+    ignore_files: Vec<PathBuf>,
     file_info: Vec<FileInfo>,
     file_index: HashMap<PathBuf, FileIndex>,
     size_dict: SizeDict,
@@ -35,17 +35,75 @@ pub struct JustOne {
 }
 
 #[derive(Debug)]
+pub enum StrictLevel {
+    Common,
+    Shallow,
+    ByteByByte,
+}
+
+#[derive(Debug)]
 pub enum JustOneError {
-    IOError(io::Error),
+    IOError {
+        files: Vec<PathBuf>,
+        error: io::Error,
+    },
     WalkdirError(walkdir::Error),
     GeneralError(Box<dyn Error>),
     UnknownError,
 }
 
+macro_rules! io_error {
+    ($err:expr $(, $file:expr) *) => {{
+        #[cfg(debug_assertions)]
+        eprintln!("[DEBUG:io_error!] {}:{}:{}", file!(), line!(), column!());
+        #[cfg(debug_assertions)]
+        eprintln!("[DEBUG:io_error!] {}:{}:{}", file!(), line!(), column!()); // redundant
+        JustOneError::IOError {
+            files: vec![$(($file.as_ref() as &Path).to_path_buf(),)*],
+            error: $err,
+        }
+    }};
+}
+
+macro_rules! walkdir_error {
+    ($err:expr) => {{
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[DEBUG:walkdir_error!] {}:{}:{}",
+            file!(),
+            line!(),
+            column!()
+        );
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[DEBUG:walkdir_error!] {}:{}:{}",
+            file!(),
+            line!(),
+            column!()
+        ); // redundant
+        JustOneError::WalkdirError($err)
+    }};
+}
+
 impl fmt::Display for JustOneError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            JustOneError::IOError(e) => e.fmt(f),
+            JustOneError::IOError { files, error } => {
+                match files.len() {
+                    0 => (),
+                    1 => format!("`{}` ", files[0].display()).fmt(f)?,
+                    _ => format!(
+                        "[{}]\n",
+                        files
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                    .fmt(f)?,
+                };
+                error.fmt(f)
+            }
             JustOneError::WalkdirError(e) => e.fmt(f),
             JustOneError::GeneralError(e) => e.fmt(f),
             JustOneError::UnknownError => write!(f, "Unknown Error occurred"),
@@ -56,7 +114,7 @@ impl fmt::Display for JustOneError {
 impl Error for JustOneError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            JustOneError::IOError(e) => Some(e),
+            JustOneError::IOError { files: _, error } => Some(error),
             JustOneError::WalkdirError(e) => Some(e),
             JustOneError::GeneralError(e) => Some(e.as_ref()),
             JustOneError::UnknownError => None,
@@ -66,7 +124,10 @@ impl Error for JustOneError {
 
 impl From<io::Error> for JustOneError {
     fn from(err: io::Error) -> Self {
-        JustOneError::IOError(err)
+        JustOneError::IOError {
+            files: Vec::new(),
+            error: err,
+        }
     }
 }
 
@@ -80,56 +141,6 @@ impl From<walkdir::Error> for JustOneError {
     fn from(err: walkdir::Error) -> Self {
         JustOneError::WalkdirError(err)
     }
-}
-
-#[derive(Debug)]
-struct InfoErrorWrapper<E: Error> {
-    // TODO: Add info of file which cause error
-    error: E,
-    file: Option<&'static str>,
-    line: Option<u32>,
-    column: Option<u32>,
-}
-
-impl<E: Error> fmt::Display for InfoErrorWrapper<E> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.error, f)
-    }
-}
-
-impl<E: Error> InfoErrorWrapper<E> {
-    fn new(error: E, file: &'static str, line: u32, column: u32) -> Self {
-        InfoErrorWrapper {
-            error,
-            file: Some(file),
-            line: Some(line),
-            column: Some(column),
-        }
-    }
-}
-
-impl<E: Error> Error for InfoErrorWrapper<E> {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.error.source()
-    }
-}
-
-impl<E: Error> From<E> for InfoErrorWrapper<E> {
-    fn from(err: E) -> Self {
-        InfoErrorWrapper {
-            error: err,
-            file: None,
-            line: None,
-            column: None,
-        }
-    }
-}
-
-macro_rules! info_error {
-    ($val:expr) => {{
-        eprintln!("{}:{}:{}", file!(), line!(), column!());
-        $val
-    }};
 }
 
 #[derive(Debug)]
@@ -151,8 +162,10 @@ struct FullHash(u64);
 impl Default for JustOne {
     fn default() -> Self {
         JustOne {
+            hasher_creator: Box::new(|| Box::new(XxHash64::with_seed(XXHASH_SEED_DEFAULT))),
             strict_level: StrictLevel::default(),
             ignore_error: false,
+            ignore_files: Vec::new(),
             file_info: Vec::new(),
             file_index: HashMap::new(),
             size_dict: HashMap::new(),
@@ -162,6 +175,17 @@ impl Default for JustOne {
     }
 }
 
+impl Default for StrictLevel {
+    fn default() -> Self {
+        StrictLevel::Common
+    }
+}
+
+/// Return a default hasher creator (XxHash64 with constant int seed)
+pub fn default_hasher_creator() -> Box<dyn Fn() -> Box<dyn Hasher>> {
+    Box::new(|| Box::new(XxHash64::with_seed(XXHASH_SEED_DEFAULT)))
+}
+
 impl JustOne {
     pub fn new() -> Self {
         JustOne::default()
@@ -169,6 +193,16 @@ impl JustOne {
 
     pub fn with_config(strict_level: StrictLevel, ignore_error: bool) -> Self {
         JustOne {
+            hasher_creator: default_hasher_creator(),
+            strict_level,
+            ignore_error,
+            ..JustOne::default()
+        }
+    }
+
+    pub fn with_full_config(hasher_creator: Box<dyn Fn() -> Box<dyn Hasher>>, strict_level: StrictLevel, ignore_error: bool) -> Self {
+        JustOne {
+            hasher_creator,
             strict_level,
             ignore_error,
             ..JustOne::default()
@@ -176,8 +210,7 @@ impl JustOne {
     }
 
     pub fn update(&mut self, dir: impl AsRef<Path>) -> Result<&mut Self, JustOneError> {
-        self.update_directory(dir, self.ignore_error)
-            .map_err(|e| info_error!(e))?;
+        self.update_directory(dir)?;
 
         Ok(self)
     }
@@ -208,13 +241,13 @@ impl JustOne {
     }
 
     fn duplicates_strict(&self, shallow: bool) -> Result<Vec<Vec<&Path>>, JustOneError> {
-        let dups = self.duplicates_common().map_err(|e| info_error!(e))?;
+        let dups = self.duplicates_common()?;
         let mut diff_files: Vec<Vec<&Path>> = Vec::new();
         for dup in dups {
             for file in dup {
                 for same_files in &mut diff_files {
                     let first_file = same_files[0];
-                    if file_cmp(file, first_file, shallow).map_err(|e| info_error!(e))? {
+                    if file_cmp(file, first_file, shallow)? {
                         same_files.push(file);
                         break;
                     }
@@ -229,28 +262,28 @@ impl JustOne {
     fn update_directory(
         &mut self,
         dir: impl AsRef<Path>,
-        ignore_error: bool,
     ) -> Result<HashSet<FileIndex>, JustOneError> {
-        if !ignore_error {
-            let mut entries = Vec::new();
-            for entry in WalkDir::new(dir) {
-                let entry = entry.map_err(|e| info_error!(e))?;
-                if !entry.file_type().is_file() {
-                    // TODO: check if is symlink
-                    entries.push(entry);
+        let mut entries = Vec::new();
+        for entry in WalkDir::new(dir) {
+            let entry = match entry {
+                Ok(val) => val,
+                Err(e) => {
+                    if self.ignore_error {
+                        if let Some(path) = e.path() {
+                            self.ignore_files.push(path.to_path_buf());
+                        }
+                        continue;
+                    } else {
+                        return Err(walkdir_error!(e));
+                    }
                 }
+            };
+            // TODO: check if is symlink
+            if entry.file_type().is_file() {
+                entries.push(entry);
             }
-            self.update_dir_entries(entries)
-        } else {
-            self.update_dir_entries(
-                // Iterate over all entries and ignore any errors that may arise
-                // (e.g., This code below will silently skip directories that the owner of the running process does not have permission to access.)
-                WalkDir::new(dir)
-                    .into_iter()
-                    .filter_map(|e| e.ok())
-                    .filter(|e| !e.file_type().is_dir()),
-            )
         }
+        self.update_dir_entries(entries)
     }
     fn update_dir_entries<T>(&mut self, entries: T) -> Result<HashSet<FileIndex>, JustOneError>
     where
@@ -263,25 +296,27 @@ impl JustOne {
 
         for entry in entries.into_iter().progress() {
             let path: &Path = entry.path();
-            let file_size = entry.metadata().map_err(|e| info_error!(e))?.len() as FileSize;
-            let file_index = self
-                .add_file_info(path, file_size, None, None)
-                .map_err(|e| info_error!(e))?;
+            let file_size = entry.metadata().map_err(|e| walkdir_error!(e))?.len() as FileSize;
+            let file_index = self.add_file_info(path, file_size, None, None);
             size_dict_temp
                 .entry(file_size)
                 .or_insert_with(|| HashSet::new())
                 .insert(file_index);
         }
 
-        for (file_size, file_index) in self
-            .merge_size_dict(size_dict_temp)
-            .map_err(|e| info_error!(e))?
-            .into_iter()
-            .progress()
-        {
-            let small_hash = self
-                .get_small_hash(file_index)
-                .map_err(|e| info_error!(e))?;
+        for (file_size, file_index) in self.merge_size_dict(size_dict_temp).into_iter().progress() {
+            let small_hash = match self.get_small_hash(file_index) {
+                Ok(val) => val,
+                Err(e) => {
+                    if self.ignore_error {
+                        self.ignore_files
+                            .push(self.file_info.get(file_index).unwrap().path.clone());
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
             let key = (file_size, small_hash);
             small_hash_dict_temp
                 .entry(key)
@@ -291,11 +326,21 @@ impl JustOne {
 
         for file_index in self
             .merge_small_hash_dict(small_hash_dict_temp)
-            .map_err(|e| info_error!(e))?
             .into_iter()
             .progress()
         {
-            let full_hash = self.get_full_hash(file_index).map_err(|e| info_error!(e))?;
+            let full_hash = match self.get_full_hash(file_index) {
+                Ok(val) => val,
+                Err(e) => {
+                    if self.ignore_error {
+                        self.ignore_files
+                            .push(self.file_info.get(file_index).unwrap().path.clone());
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
             full_hash_dict_temp
                 .entry(full_hash)
                 .or_insert_with(|| HashSet::new())
@@ -304,7 +349,6 @@ impl JustOne {
 
         for file_index in self
             .merge_full_hash_dict(full_hash_dict_temp)
-            .map_err(|e| info_error!(e))?
             .into_iter()
             .progress()
         {
@@ -320,9 +364,9 @@ impl JustOne {
         file_size: FileSize,
         small_hash: Option<SmallHash>,
         full_hash: Option<FullHash>,
-    ) -> Result<FileIndex, JustOneError> {
+    ) -> FileIndex {
         if let Some(&index) = self.file_index.get(path) {
-            Ok(index)
+            index
         } else {
             let index = self.file_info.len();
             let old_index = self.file_index.insert(path.into(), index);
@@ -334,7 +378,7 @@ impl JustOne {
                 small_hash,
                 full_hash,
             });
-            Ok(index)
+            index
         }
     }
 
@@ -342,11 +386,7 @@ impl JustOne {
         &self.file_info.get(file_index).unwrap().path
     }
 
-    fn merge_size_dict(
-        &mut self,
-        size_dict_temp: SizeDict,
-    ) -> Result<Vec<(FileSize, FileIndex)>, JustOneError> {
-        // TODO: Use iterator like size_dict_temp.iter().map(|..| ...)...
+    fn merge_size_dict(&mut self, size_dict_temp: SizeDict) -> Vec<(FileSize, FileIndex)> {
         let mut merged: Vec<(FileSize, FileIndex)> = Vec::new();
         for (file_size, file_index_set_temp) in size_dict_temp {
             if !self.size_dict.contains_key(&file_size) {
@@ -364,14 +404,10 @@ impl JustOne {
                 merged.extend(set.iter().map(|&file_index| (file_size, file_index)));
             }
         }
-        Ok(merged)
+        merged
     }
 
-    fn merge_small_hash_dict(
-        &mut self,
-        small_hash_dict_temp: SmallHashDict,
-    ) -> Result<Vec<FileIndex>, JustOneError> {
-        // TODO: Use iterator like small_hash_dict_temp.iter().map(|..| ...)...
+    fn merge_small_hash_dict(&mut self, small_hash_dict_temp: SmallHashDict) -> Vec<FileIndex> {
         let mut merged: Vec<FileIndex> = Vec::new();
         for (file_size_and_small_hash, file_index_set_temp) in small_hash_dict_temp {
             if !self.small_hash_dict.contains_key(&file_size_and_small_hash) {
@@ -393,14 +429,10 @@ impl JustOne {
                 merged.extend(set.iter());
             }
         }
-        Ok(merged)
+        merged
     }
 
-    fn merge_full_hash_dict(
-        &mut self,
-        full_hash_dict_temp: FullHashDict,
-    ) -> Result<Vec<FileIndex>, JustOneError> {
-        // TODO: Use iterator like full_hash_dict_temp.iter().map(|..| ...)...
+    fn merge_full_hash_dict(&mut self, full_hash_dict_temp: FullHashDict) -> Vec<FileIndex> {
         let mut merged: Vec<FileIndex> = Vec::new();
         for (full_hash, file_index_set_temp) in full_hash_dict_temp {
             if !self.full_hash_dict.contains_key(&full_hash) {
@@ -418,7 +450,7 @@ impl JustOne {
                 merged.extend(set.iter());
             }
         }
-        Ok(merged)
+        merged
     }
 
     fn get_small_hash(&mut self, file_index: FileIndex) -> Result<SmallHash, JustOneError> {
@@ -427,8 +459,11 @@ impl JustOne {
         if let Some(hash) = file_info.small_hash {
             Ok(hash)
         } else {
-            let mut f = File::open(&file_info.path).map_err(|e| info_error!(e))?;
-            let hash = get_small_hash(&mut f).map_err(|e| info_error!(e))?;
+            let path = &file_info.path;
+            let mut f = File::open(path).map_err(|e| io_error!(e, path))?;
+            let hasher_creator = self.hasher_creator.as_ref();
+            let hasher = hasher_creator();
+            let hash = get_small_hash(&mut f, hasher).map_err(|e| io_error!(e, path))?;
             file_info.small_hash = Some(hash);
             Ok(hash)
         }
@@ -440,27 +475,30 @@ impl JustOne {
         if let Some(hash) = file_info.full_hash {
             Ok(hash)
         } else {
-            let mut f = File::open(&file_info.path).map_err(|e| info_error!(e))?;
-            let hash = get_full_hash(&mut f).map_err(|e| info_error!(e))?;
+            let path = &file_info.path;
+            let mut f = File::open(path).map_err(|e| io_error!(e, path))?;
+            let hasher_creator = self.hasher_creator.as_ref();
+            let hasher = hasher_creator();
+            let hash = get_full_hash(&mut f, hasher).map_err(|e| io_error!(e, path))?;
             file_info.full_hash = Some(hash);
             Ok(hash)
         }
     }
 }
 
-fn get_small_hash(f: &mut dyn Read) -> Result<SmallHash, io::Error> {
+fn get_small_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> Result<SmallHash, io::Error> {
+    // let mut hasher = XxHash64::with_seed(XXHASH_SEED_DEFAULT); // TODO: Use xxh3_128
     let mut buffer = [0; SMALL_HASH_CHUNK_SIZE];
-    let mut hasher = XxHash64::with_seed(XXHASH_SEED_DEFAULT); // TODO: Use xxh3_128
-    let read_size = f.read(&mut buffer).map_err(|e| info_error!(e))?;
+    let read_size = f.read(&mut buffer)?;
     hasher.write(&buffer[..read_size]);
     Ok(SmallHash(hasher.finish()))
 }
 
-fn get_full_hash(f: &mut dyn Read) -> Result<FullHash, io::Error> {
-    let mut hasher = XxHash64::with_seed(XXHASH_SEED_DEFAULT); // TODO: Use xxh3_128
+fn get_full_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> Result<FullHash, io::Error> {
+    // let mut hasher = XxHash64::with_seed(XXHASH_SEED_DEFAULT); // TODO: Use xxh3_128
     let mut buffer = [0; FILE_READ_BUFFER_SIZE];
     loop {
-        let read_size = f.read(&mut buffer).map_err(|e| info_error!(e))?;
+        let read_size = f.read(&mut buffer)?;
         if read_size == 0 {
             break;
         }
@@ -473,69 +511,45 @@ fn file_cmp(
     file_a: impl AsRef<Path>,
     file_b: impl AsRef<Path>,
     shallow: bool,
-) -> Result<bool, Box<dyn Error>> {
-    Ok(filecmp::cmp(file_a, file_b, shallow).map_err(|e| info_error!(e))?)
-}
-
-#[derive(Debug)]
-pub enum StrictLevel {
-    Common,
-    Shallow,
-    ByteByByte,
-}
-
-impl Default for StrictLevel {
-    fn default() -> Self {
-        StrictLevel::Common
-    }
+) -> Result<bool, JustOneError> {
+    Ok(filecmp::cmp(&file_a, &file_b, shallow).map_err(|e| io_error!(e, file_a, file_b))?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
 
     #[test]
     fn test_get_small_hash() {
+        let hasher_creator = default_hasher_creator();
+
         let mut f = &[b'0'; 12345][..];
-        let SmallHash(hash_val) = get_small_hash(&mut f).unwrap();
+        let SmallHash(hash_val) = get_small_hash(&mut f, hasher_creator()).unwrap();
         assert_eq!("908a9517d970b2c6", format!("{:016x}", hash_val)); // xxh64
 
-        let mut f = File::open(
-            "test_data/Against the Current - Legends Never Die-2017英雄联盟全球总决赛主题曲.mp3",
-        )
-        .unwrap();
-        let SmallHash(hash_val) = get_small_hash(&mut f).unwrap();
-        assert_eq!("fb95eaebae131262", format!("{:016x}", hash_val)); // xxh64
-
-        let mut f = File::open("test_data/test.txt").unwrap();
-        let SmallHash(hash_val) = get_small_hash(&mut f).unwrap();
+        let mut f = &b"abc"[..];
+        let SmallHash(hash_val) = get_small_hash(&mut f, hasher_creator()).unwrap();
         assert_eq!("44bc2cf5ad770999", format!("{:016x}", hash_val)); // xxh64
 
-        let mut f = File::open("test_data/empty.txt").unwrap();
-        let SmallHash(hash_val) = get_small_hash(&mut f).unwrap();
+        let mut f = &b""[..];
+        let SmallHash(hash_val) = get_small_hash(&mut f, hasher_creator()).unwrap();
         assert_eq!("ef46db3751d8e999", format!("{:016x}", hash_val)); // xxh64
     }
 
     #[test]
     fn test_get_full_hash() {
+        let hasher_creator = default_hasher_creator();
+        
         let mut f = &[b'0'; 12345][..];
-        let FullHash(hash_val) = get_full_hash(&mut f).unwrap();
+        let FullHash(hash_val) = get_full_hash(&mut f, hasher_creator()).unwrap();
         assert_eq!("8052320d3bcad6a7", format!("{:016x}", hash_val)); // xxh64
 
-        let mut f = File::open(
-            "test_data/Against the Current - Legends Never Die-2017英雄联盟全球总决赛主题曲.mp3",
-        )
-        .unwrap();
-        let FullHash(hash_val) = get_full_hash(&mut f).unwrap();
-        assert_eq!("2b18bac92063d35f", format!("{:016x}", hash_val)); // xxh64
-
-        let mut f = File::open("test_data/test.txt").unwrap();
-        let FullHash(hash_val) = get_full_hash(&mut f).unwrap();
+        let mut f = &b"abc"[..];
+        let FullHash(hash_val) = get_full_hash(&mut f, hasher_creator()).unwrap();
         assert_eq!("44bc2cf5ad770999", format!("{:016x}", hash_val)); // xxh64
 
-        let mut f = File::open("test_data/empty.txt").unwrap();
-        let FullHash(hash_val) = get_full_hash(&mut f).unwrap();
+        let mut f = &b""[..];
+        let FullHash(hash_val) = get_full_hash(&mut f, hasher_creator()).unwrap();
         assert_eq!("ef46db3751d8e999", format!("{:016x}", hash_val)); // xxh64
     }
 }
