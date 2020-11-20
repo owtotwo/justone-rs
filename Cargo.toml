@@ -5,6 +5,9 @@ authors = ["owtotwo <owtotwo@163.com>"]
 license = "LGPL-3.0-only"
 description = "A fast duplicate files finder, the rust implementation for JustOne."
 edition = "2018"
+readme = "Readme.md"
+homepage = "https://github.com/owtotwo/justone-rs/"
+repository = "https://github.com/owtotwo/justone-rs/"
 
 [dependencies]
 walkdir = "2"

@@ -9,10 +9,10 @@ use justone::{self, JustOne, StrictLevel, default_hasher_creator};
 
 fn main() {
     let matches = App::new("justone")
-        .version("0.1.0")
+        .version("0.2.0")
         .author("owtotwo <owtotwo@163.com>")
         .about("A fast duplicate files finder, the rust implementation for JustOne.")
-        .bin_name("jo")
+        .bin_name("justone")
         .arg(Arg::with_name("folder")
             .help("The folder where you want to find duplicate files")
             .value_name("FOLDER")
