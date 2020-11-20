@@ -200,7 +200,11 @@ impl JustOne {
         }
     }
 
-    pub fn with_full_config(hasher_creator: Box<dyn Fn() -> Box<dyn Hasher>>, strict_level: StrictLevel, ignore_error: bool) -> Self {
+    pub fn with_full_config(
+        hasher_creator: Box<dyn Fn() -> Box<dyn Hasher>>,
+        strict_level: StrictLevel,
+        ignore_error: bool,
+    ) -> Self {
         JustOne {
             hasher_creator,
             strict_level,
@@ -487,7 +491,6 @@ impl JustOne {
 }
 
 fn get_small_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> Result<SmallHash, io::Error> {
-    // let mut hasher = XxHash64::with_seed(XXHASH_SEED_DEFAULT); // TODO: Use xxh3_128
     let mut buffer = [0; SMALL_HASH_CHUNK_SIZE];
     let read_size = f.read(&mut buffer)?;
     hasher.write(&buffer[..read_size]);
@@ -495,7 +498,6 @@ fn get_small_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> Result<Small
 }
 
 fn get_full_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> Result<FullHash, io::Error> {
-    // let mut hasher = XxHash64::with_seed(XXHASH_SEED_DEFAULT); // TODO: Use xxh3_128
     let mut buffer = [0; FILE_READ_BUFFER_SIZE];
     loop {
         let read_size = f.read(&mut buffer)?;
@@ -539,7 +541,7 @@ mod tests {
     #[test]
     fn test_get_full_hash() {
         let hasher_creator = default_hasher_creator();
-        
+
         let mut f = &[b'0'; 12345][..];
         let FullHash(hash_val) = get_full_hash(&mut f, hasher_creator()).unwrap();
         assert_eq!("8052320d3bcad6a7", format!("{:016x}", hash_val)); // xxh64
