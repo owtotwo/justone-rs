@@ -15,6 +15,7 @@ use indicatif::ProgressIterator;
 
 use filecmp;
 
+const IGNORE_ERROR_DEFAULT: bool = false;
 const XXHASH_SEED_DEFAULT: u64 = 0;
 const FILE_READ_BUFFER_SIZE: usize = 8192;
 const SMALL_HASH_CHUNK_SIZE: usize = 1024;
@@ -155,7 +156,7 @@ impl Default for JustOne {
         JustOne {
             hasher_creator: Box::new(|| Box::new(XxHash64::with_seed(XXHASH_SEED_DEFAULT))),
             strict_level: StrictLevel::default(),
-            ignore_error: false,
+            ignore_error: IGNORE_ERROR_DEFAULT,
             ignore_files: Vec::new(),
             file_info: Vec::new(),
             file_index: HashMap::new(),
@@ -256,16 +257,13 @@ impl JustOne {
         for entry in WalkDir::new(dir) {
             let entry = match entry {
                 Ok(val) => val,
-                Err(e) => {
-                    if self.ignore_error {
-                        if let Some(path) = e.path() {
-                            self.ignore_files.push(path.to_path_buf());
-                        }
-                        continue;
-                    } else {
-                        return Err(walkdir_error!(e));
+                Err(e) if self.ignore_error => {
+                    if let Some(path) = e.path() {
+                        self.ignore_files.push(path.to_path_buf());
                     }
+                    continue;
                 }
+                Err(e) => return Err(walkdir_error!(e)),
             };
             // TODO: check if is symlink
             if entry.file_type().is_file() {
@@ -297,15 +295,12 @@ impl JustOne {
         for (file_size, file_index) in self.merge_size_dict(size_dict_temp).into_iter().progress() {
             let small_hash = match self.get_small_hash(file_index) {
                 Ok(val) => val,
-                Err(e) => {
-                    if self.ignore_error {
-                        self.ignore_files
-                            .push(self.file_info.get(file_index).unwrap().path.clone());
-                        continue;
-                    } else {
-                        return Err(e);
-                    }
+                Err(_) if self.ignore_error => {
+                    self.ignore_files
+                        .push(self.file_info.get(file_index).unwrap().path.clone());
+                    continue;
                 }
+                Err(e) => return Err(e),
             };
             let key = (file_size, small_hash);
             small_hash_dict_temp
@@ -321,15 +316,12 @@ impl JustOne {
         {
             let full_hash = match self.get_full_hash(file_index) {
                 Ok(val) => val,
-                Err(e) => {
-                    if self.ignore_error {
-                        self.ignore_files
-                            .push(self.file_info.get(file_index).unwrap().path.clone());
-                        continue;
-                    } else {
-                        return Err(e);
-                    }
+                Err(_) if self.ignore_error => {
+                    self.ignore_files
+                        .push(self.file_info.get(file_index).unwrap().path.clone());
+                    continue;
                 }
+                Err(e) => return Err(e),
             };
             full_hash_dict_temp
                 .entry(full_hash)
