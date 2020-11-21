@@ -289,6 +289,7 @@ impl JustOne {
         }
         self.update_dir_entries(entries)
     }
+
     fn update_dir_entries<T>(&mut self, entries: T) -> Result<HashSet<FileIndex>, JustOneError>
     where
         T: IntoIterator<Item = DirEntry>,
@@ -369,9 +370,7 @@ impl JustOne {
         small_hash: Option<SmallHash>,
         full_hash: Option<FullHash>,
     ) -> FileIndex {
-        if let Some(&index) = self.file_index.get(path) {
-            index
-        } else {
+        self.file_index.get(path).copied().unwrap_or_else(|| {
             let index = self.file_info.len();
             let old_index = self.file_index.insert(path.into(), index);
             debug_assert_eq!(old_index, None);
@@ -383,7 +382,7 @@ impl JustOne {
                 full_hash,
             });
             index
-        }
+        })
     }
 
     fn get_file_path_by_index(&self, file_index: FileIndex) -> &Path {
