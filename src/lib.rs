@@ -231,20 +231,17 @@ impl JustOne {
     }
 
     fn duplicates_common(&self) -> Result<Vec<Vec<&Path>>> {
-        let mut dups: Vec<Vec<&Path>> = Vec::with_capacity(self.full_hash_dict.len());
-        for (_, file_index_set) in &self.full_hash_dict {
-            let set_size = file_index_set.len();
-            debug_assert!(set_size >= 1);
-            if set_size == 1 {
-                continue;
-            }
-            let mut dup = Vec::with_capacity(set_size);
-            for file_index in file_index_set {
-                dup.push(self.get_file_path_by_index(file_index.clone()));
-            }
-            dups.push(dup);
-        }
-        Ok(dups)
+        Ok(self
+            .full_hash_dict
+            .iter()
+            .filter(|(_, s)| s.len() > 1)
+            .map(|(_, file_index_set)| {
+                file_index_set
+                    .iter()
+                    .map(|file_index| self.get_file_path_by_index(*file_index))
+                    .collect()
+            })
+            .collect())
     }
 
     fn duplicates_strict(&self, shallow: bool) -> Result<Vec<Vec<&Path>>> {
