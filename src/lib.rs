@@ -389,9 +389,7 @@ impl JustOne {
     fn merge_size_dict(&mut self, size_dict_temp: SizeDict) -> Vec<(FileSize, FileIndex)> {
         let mut merged: Vec<(FileSize, FileIndex)> = Vec::new();
         for (file_size, file_index_set_temp) in size_dict_temp {
-            if !self.size_dict.contains_key(&file_size) {
-                self.size_dict.insert(file_size, HashSet::new());
-            }
+            self.size_dict.entry(file_size).or_insert_with(|| HashSet::new());
             let file_index_set = self.size_dict.get_mut(&file_size).unwrap();
             let is_single = file_index_set.len() == 1;
             file_index_set.extend(file_index_set_temp.iter());
@@ -410,10 +408,7 @@ impl JustOne {
     fn merge_small_hash_dict(&mut self, small_hash_dict_temp: SmallHashDict) -> Vec<FileIndex> {
         let mut merged: Vec<FileIndex> = Vec::new();
         for (file_size_and_small_hash, file_index_set_temp) in small_hash_dict_temp {
-            if !self.small_hash_dict.contains_key(&file_size_and_small_hash) {
-                self.small_hash_dict
-                    .insert(file_size_and_small_hash, HashSet::new());
-            }
+            self.small_hash_dict.entry(file_size_and_small_hash).or_insert_with(|| HashSet::new());
             let file_index_set = self
                 .small_hash_dict
                 .get_mut(&file_size_and_small_hash)
@@ -435,9 +430,7 @@ impl JustOne {
     fn merge_full_hash_dict(&mut self, full_hash_dict_temp: FullHashDict) -> Vec<FileIndex> {
         let mut merged: Vec<FileIndex> = Vec::new();
         for (full_hash, file_index_set_temp) in full_hash_dict_temp {
-            if !self.full_hash_dict.contains_key(&full_hash) {
-                self.full_hash_dict.insert(full_hash, HashSet::new());
-            }
+            self.full_hash_dict.entry(full_hash).or_insert_with(|| HashSet::new());
             let file_index_set = self.full_hash_dict.get_mut(&full_hash).unwrap();
             let is_single = file_index_set.len() == 1;
             file_index_set.extend(file_index_set_temp.iter());
@@ -455,7 +448,7 @@ impl JustOne {
 
     fn get_small_hash(&mut self, file_index: FileIndex) -> Result<SmallHash> {
         let mut file_info = self.file_info.get_mut(file_index).unwrap();
-
+        
         if let Some(hash) = file_info.small_hash {
             Ok(hash)
         } else {
