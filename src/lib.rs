@@ -4,6 +4,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, prelude::Read};
 use std::path::{Path, PathBuf};
+use std::result;
 
 use walkdir::{DirEntry, WalkDir};
 
@@ -21,6 +22,8 @@ const SMALL_HASH_CHUNK_SIZE: usize = 1024;
 type SizeDict = HashMap<FileSize, HashSet<FileIndex>>;
 type SmallHashDict = HashMap<(FileSize, SmallHash), HashSet<FileIndex>>;
 type FullHashDict = HashMap<FullHash, HashSet<FileIndex>>;
+
+pub type Result<T> = result::Result<T, JustOneError>;
 
 pub struct JustOne {
     hasher_creator: Box<dyn Fn() -> Box<dyn Hasher>>,
@@ -213,13 +216,13 @@ impl JustOne {
         }
     }
 
-    pub fn update(&mut self, dir: impl AsRef<Path>) -> Result<&mut Self, JustOneError> {
+    pub fn update(&mut self, dir: impl AsRef<Path>) -> Result<&mut Self> {
         self.update_directory(dir)?;
 
         Ok(self)
     }
 
-    pub fn duplicates(&self) -> Result<Vec<Vec<&Path>>, JustOneError> {
+    pub fn duplicates(&self) -> Result<Vec<Vec<&Path>>> {
         match self.strict_level {
             StrictLevel::Common => self.duplicates_common(),
             StrictLevel::Shallow => self.duplicates_strict(true),
@@ -227,7 +230,7 @@ impl JustOne {
         }
     }
 
-    fn duplicates_common(&self) -> Result<Vec<Vec<&Path>>, JustOneError> {
+    fn duplicates_common(&self) -> Result<Vec<Vec<&Path>>> {
         let mut dups: Vec<Vec<&Path>> = Vec::with_capacity(self.full_hash_dict.len());
         for (_, file_index_set) in &self.full_hash_dict {
             let set_size = file_index_set.len();
@@ -244,7 +247,7 @@ impl JustOne {
         Ok(dups)
     }
 
-    fn duplicates_strict(&self, shallow: bool) -> Result<Vec<Vec<&Path>>, JustOneError> {
+    fn duplicates_strict(&self, shallow: bool) -> Result<Vec<Vec<&Path>>> {
         let dups = self.duplicates_common()?;
         let mut diff_files: Vec<Vec<&Path>> = Vec::new();
         for dup in dups {
@@ -263,10 +266,7 @@ impl JustOne {
         Ok(diff_files)
     }
 
-    fn update_directory(
-        &mut self,
-        dir: impl AsRef<Path>,
-    ) -> Result<HashSet<FileIndex>, JustOneError> {
+    fn update_directory(&mut self, dir: impl AsRef<Path>) -> Result<HashSet<FileIndex>> {
         let mut entries = Vec::new();
         for entry in WalkDir::new(dir) {
             let entry = match entry {
@@ -290,7 +290,7 @@ impl JustOne {
         self.update_dir_entries(entries)
     }
 
-    fn update_dir_entries<T>(&mut self, entries: T) -> Result<HashSet<FileIndex>, JustOneError>
+    fn update_dir_entries<T>(&mut self, entries: T) -> Result<HashSet<FileIndex>>
     where
         T: IntoIterator<Item = DirEntry>,
     {
@@ -456,7 +456,7 @@ impl JustOne {
         merged
     }
 
-    fn get_small_hash(&mut self, file_index: FileIndex) -> Result<SmallHash, JustOneError> {
+    fn get_small_hash(&mut self, file_index: FileIndex) -> Result<SmallHash> {
         let mut file_info = self.file_info.get_mut(file_index).unwrap();
 
         if let Some(hash) = file_info.small_hash {
@@ -472,7 +472,7 @@ impl JustOne {
         }
     }
 
-    fn get_full_hash(&mut self, file_index: FileIndex) -> Result<FullHash, JustOneError> {
+    fn get_full_hash(&mut self, file_index: FileIndex) -> Result<FullHash> {
         let mut file_info = self.file_info.get_mut(file_index).unwrap();
 
         if let Some(hash) = file_info.full_hash {
@@ -489,14 +489,14 @@ impl JustOne {
     }
 }
 
-fn get_small_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> Result<SmallHash, io::Error> {
+fn get_small_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> io::Result<SmallHash> {
     let mut buffer = [0; SMALL_HASH_CHUNK_SIZE];
     let read_size = f.read(&mut buffer)?;
     hasher.write(&buffer[..read_size]);
     Ok(SmallHash(hasher.finish()))
 }
 
-fn get_full_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> Result<FullHash, io::Error> {
+fn get_full_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> io::Result<FullHash> {
     let mut buffer = [0; FILE_READ_BUFFER_SIZE];
     loop {
         let read_size = f.read(&mut buffer)?;
@@ -508,11 +508,7 @@ fn get_full_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> Result<FullHa
     Ok(FullHash(hasher.finish()))
 }
 
-fn file_cmp(
-    file_a: impl AsRef<Path>,
-    file_b: impl AsRef<Path>,
-    shallow: bool,
-) -> Result<bool, JustOneError> {
+fn file_cmp(file_a: impl AsRef<Path>, file_b: impl AsRef<Path>, shallow: bool) -> Result<bool> {
     Ok(filecmp::cmp(&file_a, &file_b, shallow).map_err(|e| io_error!(e, file_a, file_b))?)
 }
 
