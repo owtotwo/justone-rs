@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
-use std::io::{self, prelude::Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::result;
 
@@ -51,16 +51,19 @@ pub enum JustOneError {
         error: io::Error,
     },
     WalkdirError(walkdir::Error),
-    GeneralError(Box<dyn Error>),
-    UnknownError,
 }
 
 macro_rules! io_error {
     ($err:expr $(, $file:expr) *) => {{
         #[cfg(debug_assertions)]
-        eprintln!("[DEBUG:io_error!] {}:{}:{}", file!(), line!(), column!());
-        #[cfg(debug_assertions)]
-        eprintln!("[DEBUG:io_error!] {}:{}:{}", file!(), line!(), column!()); // redundant
+        (0..2).for_each(|_| {
+            eprintln!(
+                "[DEBUG:io_error!] {}:{}:{}",
+                file!(),
+                line!(),
+                column!()
+            )
+        }); // redundant print, because .progress()'s '\r' will cover the printed-line
         JustOneError::IOError {
             files: vec![$(($file.as_ref() as &Path).to_path_buf(),)*],
             error: $err,
@@ -71,19 +74,14 @@ macro_rules! io_error {
 macro_rules! walkdir_error {
     ($err:expr) => {{
         #[cfg(debug_assertions)]
-        eprintln!(
-            "[DEBUG:walkdir_error!] {}:{}:{}",
-            file!(),
-            line!(),
-            column!()
-        );
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "[DEBUG:walkdir_error!] {}:{}:{}",
-            file!(),
-            line!(),
-            column!()
-        ); // redundant
+        (0..2).for_each(|_| {
+            eprintln!(
+                "[DEBUG:walkdir_error!] {}:{}:{}",
+                file!(),
+                line!(),
+                column!()
+            )
+        }); // redundant print, because .progress()'s '\r' will cover the printed-line
         JustOneError::WalkdirError($err)
     }};
 }
@@ -108,8 +106,6 @@ impl fmt::Display for JustOneError {
                 error.fmt(f)
             }
             JustOneError::WalkdirError(e) => e.fmt(f),
-            JustOneError::GeneralError(e) => e.fmt(f),
-            JustOneError::UnknownError => write!(f, "Unknown Error occurred"),
         }
     }
 }
@@ -119,8 +115,6 @@ impl Error for JustOneError {
         match self {
             JustOneError::IOError { files: _, error } => Some(error),
             JustOneError::WalkdirError(e) => Some(e),
-            JustOneError::GeneralError(e) => Some(e.as_ref()),
-            JustOneError::UnknownError => None,
         }
     }
 }
@@ -131,12 +125,6 @@ impl From<io::Error> for JustOneError {
             files: Vec::new(),
             error: err,
         }
-    }
-}
-
-impl From<Box<dyn Error>> for JustOneError {
-    fn from(err: Box<dyn Error>) -> Self {
-        JustOneError::GeneralError(err)
     }
 }
 
@@ -389,7 +377,9 @@ impl JustOne {
     fn merge_size_dict(&mut self, size_dict_temp: SizeDict) -> Vec<(FileSize, FileIndex)> {
         let mut merged: Vec<(FileSize, FileIndex)> = Vec::new();
         for (file_size, file_index_set_temp) in size_dict_temp {
-            self.size_dict.entry(file_size).or_insert_with(|| HashSet::new());
+            self.size_dict
+                .entry(file_size)
+                .or_insert_with(|| HashSet::new());
             let file_index_set = self.size_dict.get_mut(&file_size).unwrap();
             let is_single = file_index_set.len() == 1;
             file_index_set.extend(file_index_set_temp.iter());
@@ -408,7 +398,9 @@ impl JustOne {
     fn merge_small_hash_dict(&mut self, small_hash_dict_temp: SmallHashDict) -> Vec<FileIndex> {
         let mut merged: Vec<FileIndex> = Vec::new();
         for (file_size_and_small_hash, file_index_set_temp) in small_hash_dict_temp {
-            self.small_hash_dict.entry(file_size_and_small_hash).or_insert_with(|| HashSet::new());
+            self.small_hash_dict
+                .entry(file_size_and_small_hash)
+                .or_insert_with(|| HashSet::new());
             let file_index_set = self
                 .small_hash_dict
                 .get_mut(&file_size_and_small_hash)
@@ -430,7 +422,9 @@ impl JustOne {
     fn merge_full_hash_dict(&mut self, full_hash_dict_temp: FullHashDict) -> Vec<FileIndex> {
         let mut merged: Vec<FileIndex> = Vec::new();
         for (full_hash, file_index_set_temp) in full_hash_dict_temp {
-            self.full_hash_dict.entry(full_hash).or_insert_with(|| HashSet::new());
+            self.full_hash_dict
+                .entry(full_hash)
+                .or_insert_with(|| HashSet::new());
             let file_index_set = self.full_hash_dict.get_mut(&full_hash).unwrap();
             let is_single = file_index_set.len() == 1;
             file_index_set.extend(file_index_set_temp.iter());
@@ -448,7 +442,7 @@ impl JustOne {
 
     fn get_small_hash(&mut self, file_index: FileIndex) -> Result<SmallHash> {
         let mut file_info = self.file_info.get_mut(file_index).unwrap();
-        
+
         if let Some(hash) = file_info.small_hash {
             Ok(hash)
         } else {
@@ -479,14 +473,14 @@ impl JustOne {
     }
 }
 
-fn get_small_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> io::Result<SmallHash> {
+fn get_small_hash(f: &mut dyn io::Read, mut hasher: Box<dyn Hasher>) -> io::Result<SmallHash> {
     let mut buffer = [0; SMALL_HASH_CHUNK_SIZE];
     let read_size = f.read(&mut buffer)?;
     hasher.write(&buffer[..read_size]);
     Ok(SmallHash(hasher.finish()))
 }
 
-fn get_full_hash(f: &mut dyn Read, mut hasher: Box<dyn Hasher>) -> io::Result<FullHash> {
+fn get_full_hash(f: &mut dyn io::Read, mut hasher: Box<dyn Hasher>) -> io::Result<FullHash> {
     let mut buffer = [0; FILE_READ_BUFFER_SIZE];
     loop {
         let read_size = f.read(&mut buffer)?;
