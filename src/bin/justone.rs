@@ -7,12 +7,18 @@ use std::time::Instant;
 use clap::{App, Arg};
 use justone::{self, JustOne, StrictLevel, default_hasher_creator};
 
+const APP_NAME: &'static str = env!("CARGO_PKG_NAME");
+const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+const AUTHORS : &'static str = env!("CARGO_PKG_AUTHORS");
+const BIN_NAME: &'static str = env!("CARGO_BIN_NAME");
+const DESCRIPTION: &'static str = env!("CARGO_PKG_DESCRIPTION");
+
 fn main() {
-    let matches = App::new("justone")
-        .version("0.2.0")
-        .author("owtotwo <owtotwo@163.com>")
-        .about("A fast duplicate files finder, the rust implementation for JustOne.")
-        .bin_name("justone")
+    let matches = App::new(APP_NAME)
+        .version(VERSION)
+        .author(AUTHORS)
+        .about(DESCRIPTION)
+        .bin_name(BIN_NAME)
         .arg(Arg::with_name("folder")
             .help("The folder where you want to find duplicate files")
             .value_name("FOLDER")

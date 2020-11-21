@@ -15,3 +15,6 @@ twox-hash = "1.6.0"
 indicatif = "0.15.0"
 clap = "2"
 filecmp = "0.1.0"
+
+[[bin]]
+name = "justone"
