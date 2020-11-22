@@ -5,13 +5,21 @@ use std::path::Path;
 use std::time::Instant;
 
 use clap::{App, Arg};
-use justone::{self, JustOne, StrictLevel, default_hasher_creator};
+use justone::{default_hasher_creator, JustOne, StrictLevel};
 
 const APP_NAME: &'static str = env!("CARGO_PKG_NAME");
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-const AUTHORS : &'static str = env!("CARGO_PKG_AUTHORS");
+const AUTHORS: &'static str = env!("CARGO_PKG_AUTHORS");
 const BIN_NAME: &'static str = env!("CARGO_BIN_NAME");
 const DESCRIPTION: &'static str = env!("CARGO_PKG_DESCRIPTION");
+
+macro_rules! fatal {
+    ($($tt:tt)*) => {{
+        use std::io::Write;
+        writeln!(&mut ::std::io::stderr(), $($tt)*).unwrap();
+        ::std::process::exit(1)
+    }}
+}
 
 fn main() {
     let matches = App::new(APP_NAME)
@@ -69,36 +77,23 @@ fn main() {
         0 => StrictLevel::Common,
         1 => StrictLevel::Shallow,
         2 => StrictLevel::ByteByByte,
-        x @ _ => {
-            eprintln!(
-                "{} is not a valid level for file comparison strict level. (need -s, -ss or unset)",
-                x
-            );
-            std::process::exit(1);
-        }
+        x @ _ => fatal!(
+            "{} is not a valid level for file comparison strict level. (need -s, -ss or unset)",
+            x
+        ),
     };
 
     let output: Box<dyn Write> = if let Some(path) = output {
         match File::create(path) {
             Ok(f) => Box::new(f),
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                eprintln!(
-                    "Because of {:?}, failed to create a output file {} for writing result.",
-                    e.kind(),
-                    path
-                );
-                std::process::exit(1);
-            }
+            Err(e) => fatal!("IO Error: {}\nBecause of {:?}, failed to create a output file {} for writing result.", e, e.kind(), path),
         }
     } else {
         Box::new(io::stdout())
     };
 
     if let Err(e) = print_duplicates(folders, output, strict_level, ignore_error, time_it) {
-        eprintln!(""); // newline
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
+        fatal!("Error: {}", e);
     };
 }
 
