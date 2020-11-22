@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::result;
@@ -15,7 +15,9 @@ use indicatif::ProgressIterator;
 
 use filecmp;
 
+const FOLLOW_LINKS_DEFAULT: bool = false;
 const IGNORE_ERROR_DEFAULT: bool = false;
+const IGNORE_SYMLINK_DEFAULT: bool = false;
 const XXHASH_SEED_DEFAULT: u64 = 0;
 const FILE_READ_BUFFER_SIZE: usize = 8192;
 const SMALL_HASH_CHUNK_SIZE: usize = 1024;
@@ -23,19 +25,27 @@ const SMALL_HASH_CHUNK_SIZE: usize = 1024;
 type SizeDict = HashMap<FileSize, HashSet<FileIndex>>;
 type SmallHashDict = HashMap<(FileSize, SmallHash), HashSet<FileIndex>>;
 type FullHashDict = HashMap<FullHash, HashSet<FileIndex>>;
+type SymlinkHashDict = HashMap<SymlinkContent, HashSet<SymlinkPath>>;
 
 pub type Result<T> = result::Result<T, JustOneError>;
 
 pub struct JustOne {
     hasher_creator: Box<dyn Fn() -> Box<dyn Hasher>>,
     strict_level: StrictLevel,
+    /// If true, PermissionDenied or other IO Error will be ignored
     ignore_error: bool,
-    ignore_files: Vec<PathBuf>,
+    /// Files which were ignored if `ignore_error` is true
+    ignored_files: Vec<PathBuf>,
+    /// If true, symlink-type file will be ignored, and `follow_links` will be set false
+    ignore_symlink: bool,
+    /// If true, it will traverse symbolic link to dest file when deal with symlink
+    follow_links: bool,
     file_info: Vec<FileInfo>,
     file_index: HashMap<PathBuf, FileIndex>,
     size_dict: SizeDict,
     small_hash_dict: SmallHashDict,
     full_hash_dict: FullHashDict,
+    symlink_hash_dict: SymlinkHashDict,
 }
 
 #[derive(Debug)]
@@ -57,14 +67,8 @@ pub enum JustOneError {
 macro_rules! io_error {
     ($err:expr $(, $file:expr) *) => {{
         #[cfg(debug_assertions)]
-        (0..2).for_each(|_| {
-            eprintln!(
-                "[DEBUG:io_error!] {}:{}:{}",
-                file!(),
-                line!(),
-                column!()
-            )
-        }); // redundant print, because .progress()'s '\r' will cover the printed-line
+        // '\n' in tail for the printed-line covering by '\r'
+        eprintln!("[DEBUG:io_error!] {}:{}:{}\n", file!(), line!(), column!());
         JustOneError::IOError {
             files: vec![$(($file.as_ref() as &Path).to_path_buf(),)*],
             error: $err,
@@ -75,14 +79,13 @@ macro_rules! io_error {
 macro_rules! walkdir_error {
     ($err:expr) => {{
         #[cfg(debug_assertions)]
-        (0..2).for_each(|_| {
-            eprintln!(
-                "[DEBUG:walkdir_error!] {}:{}:{}",
-                file!(),
-                line!(),
-                column!()
-            )
-        }); // redundant print, because .progress()'s '\r' will cover the printed-line
+        // '\n' in tail for the printed-line covering by '\r'
+        eprintln!(
+            "[DEBUG:walkdir_error!] {}:{}:{}\n",
+            file!(),
+            line!(),
+            column!()
+        );
         JustOneError::WalkdirError($err)
     }};
 }
@@ -92,7 +95,7 @@ impl fmt::Display for JustOneError {
         match self {
             JustOneError::IOError { files, error } => {
                 match files.len() {
-                    0 => (),
+                    0 => {}
                     1 => format!("`{}` ", files[0].display()).fmt(f)?,
                     _ => format!(
                         "[{}]\n",
@@ -146,6 +149,8 @@ struct FileInfo {
 
 type FileIndex = usize;
 type FileSize = usize;
+type SymlinkContent = PathBuf;
+type SymlinkPath = PathBuf;
 #[derive(Debug, Hash, Eq, PartialEq, Copy, Clone)]
 struct SmallHash(u64);
 #[derive(Debug, Hash, Eq, PartialEq, Copy, Clone)]
@@ -153,16 +158,25 @@ struct FullHash(u64);
 
 impl Default for JustOne {
     fn default() -> Self {
+        let ignore_symlink = IGNORE_SYMLINK_DEFAULT;
+        let follow_links = if ignore_symlink {
+            false
+        } else {
+            FOLLOW_LINKS_DEFAULT
+        };
         JustOne {
             hasher_creator: Box::new(|| Box::new(XxHash64::with_seed(XXHASH_SEED_DEFAULT))),
             strict_level: StrictLevel::default(),
+            follow_links,
             ignore_error: IGNORE_ERROR_DEFAULT,
-            ignore_files: Vec::new(),
+            ignored_files: Vec::new(),
+            ignore_symlink,
             file_info: Vec::new(),
             file_index: HashMap::new(),
             size_dict: HashMap::new(),
             small_hash_dict: HashMap::new(),
             full_hash_dict: HashMap::new(),
+            symlink_hash_dict: HashMap::new(),
         }
     }
 }
@@ -212,10 +226,16 @@ impl JustOne {
     }
 
     pub fn duplicates(&self) -> Result<Vec<Vec<&Path>>> {
-        match self.strict_level {
-            StrictLevel::Common => self.duplicates_common(),
-            StrictLevel::Shallow => self.duplicates_strict(true),
-            StrictLevel::ByteByByte => self.duplicates_strict(false),
+        let duplicate_files = match self.strict_level {
+            StrictLevel::Common => self.duplicates_common()?,
+            StrictLevel::Shallow => self.duplicates_strict(true)?,
+            StrictLevel::ByteByByte => self.duplicates_strict(false)?,
+        };
+        if !self.ignore_symlink && !self.follow_links {
+            let duplicate_symlinks = self.duplicates_symlink();
+            Ok([duplicate_files, duplicate_symlinks].concat())
+        } else {
+            Ok(duplicate_files)
         }
     }
 
@@ -223,7 +243,7 @@ impl JustOne {
         Ok(self
             .full_hash_dict
             .iter()
-            .filter(|(_, s)| s.len() > 1)
+            .filter(|(_, v)| v.len() > 1)
             .map(|(_, file_index_set)| {
                 file_index_set
                     .iter()
@@ -252,28 +272,58 @@ impl JustOne {
         Ok(diff_files)
     }
 
+    fn duplicates_symlink(&self) -> Vec<Vec<&Path>> {
+        self.symlink_hash_dict
+            .iter()
+            .filter(|(_, v)| v.len() > 1)
+            .map(|(_, symlink_set)| symlink_set.iter().map(|p| p.as_ref()).collect())
+            .collect()
+    }
+
     fn update_directory(&mut self, dir: impl AsRef<Path>) -> Result<HashSet<FileIndex>> {
         let mut entries = Vec::new();
-        for entry in WalkDir::new(dir) {
+        for entry in WalkDir::new(dir).follow_links(self.follow_links) {
             let entry = match entry {
                 Ok(val) => val,
                 Err(e) if self.ignore_error => {
                     if let Some(path) = e.path() {
-                        self.ignore_files.push(path.to_path_buf());
+                        self.ignored_files.push(path.to_owned());
                     }
                     continue;
                 }
                 Err(e) => return Err(walkdir_error!(e)),
             };
-            // TODO: check if is symlink
-            if entry.file_type().is_file() {
+
+            if !self.ignore_symlink && entry.path_is_symlink() {
+                // deal with symlink
+                match self.update_symlink(&entry) {
+                    Ok(()) => {}
+                    Err(_e) if self.ignore_error => {
+                        self.ignored_files.push(entry.path().to_owned());
+                        continue;
+                    }
+                    Err(e) => return Err(io_error!(e)),
+                };
+            } else if entry.file_type().is_file() {
+                // deal with regular file
                 entries.push(entry);
             }
         }
-        self.update_dir_entries(entries)
+        // Processing symlinks separately, so all the files in entries are regular file
+        self.update_regular_files(entries)
     }
 
-    fn update_dir_entries<T>(&mut self, entries: T) -> Result<HashSet<FileIndex>>
+    /// Processing symbolic links separately
+    fn update_symlink(&mut self, symlink: &DirEntry) -> io::Result<()> {
+        let key = fs::read_link(symlink.path())?;
+        self.symlink_hash_dict
+            .entry(key)
+            .or_insert_with(|| HashSet::new())
+            .insert(symlink.path().to_owned());
+        Ok(())
+    }
+
+    fn update_regular_files<T>(&mut self, entries: T) -> Result<HashSet<FileIndex>>
     where
         T: IntoIterator<Item = DirEntry>,
     {
@@ -296,7 +346,7 @@ impl JustOne {
             let small_hash = match self.get_small_hash(file_index) {
                 Ok(val) => val,
                 Err(_) if self.ignore_error => {
-                    self.ignore_files
+                    self.ignored_files
                         .push(self.file_info.get(file_index).unwrap().path.clone());
                     continue;
                 }
@@ -317,7 +367,7 @@ impl JustOne {
             let full_hash = match self.get_full_hash(file_index) {
                 Ok(val) => val,
                 Err(_) if self.ignore_error => {
-                    self.ignore_files
+                    self.ignored_files
                         .push(self.file_info.get(file_index).unwrap().path.clone());
                     continue;
                 }
