@@ -28,7 +28,7 @@ pub fn setup() -> io::Result<PathBuf> {
     remove_path(&test_dir)?;
     fs::create_dir_all(&test_dir)?;
 
-    let a = fs::File::create(test_dir.join("A"))?;
+    let _a = fs::File::create(test_dir.join("A"))?;
 
     Ok(test_dir)
 }
