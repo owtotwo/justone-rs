@@ -71,9 +71,9 @@ checksum = "a357d28ed41a50f9c765dbfe56cbc04a64e53e5fc58ba79fbc34c10ef3df831f"
 
 [[package]]
 name = "filecmp"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0563666d3e74141c79b10378a048adb08878b5d76d4bffc80520ea0954db48b8"
+checksum = "faf6510a47a772c82badd083677ffd501dd624f9cf748ac62871f8eeee2a54e6"
 dependencies = [
  "lazy_static",
 ]
@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "justone"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "filecmp",
