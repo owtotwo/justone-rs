@@ -13,7 +13,7 @@ $ cargo install justone
 ## Usage
 
 ```
-justone 0.2.0
+justone 0.3.0
 owtotwo <owtotwo@163.com>
 A fast duplicate files finder, the rust implementation for JustOne.
 
